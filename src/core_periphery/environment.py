@@ -25,9 +25,6 @@ def func_target(n, t, L, U, a, b):
 
 @njit(cache=True)
 def compute_oracle_table_k2(L1, U1, a, b, L2, U2, T):
-    """Exact K=2 DP oracle. Returns (action_table, V1_at_start).
-    Convention: at round t (1-indexed), n1_before + n2_before = t-1
-    (pulls accumulated from PREVIOUS rounds)."""
     V_next = np.zeros(T + 2, dtype=np.float64)
     action_table = np.ones((T + 1, T + 1), dtype=np.int8)
     V1_at_start = 0.0

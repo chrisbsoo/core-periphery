@@ -18,7 +18,8 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from environment import compute_oracle_table_k2
-from algorithm import run_ucb1_monte_carlo, run_balanced_explore_monte_carlo, run_commit_ucb_monte_carlo, run_hybrid_monte_carlo, run_rawucb_monte_carlo, run_eff_rawucb_monte_carlo
+from algorithm import run_ucb1_monte_carlo, run_balanced_explore_monte_carlo,  run_rawucb_monte_carlo
+from algorithm import run_glr_ucb_monte_carlo, run_saturation_aware_monte_carlo
 
 SCRIPT_DIR = Path(__file__).parent
 
@@ -46,14 +47,12 @@ def fit_regret_exponent(algo_name, L1, U1, a, b, L2, U2, sigma, n_mc, T_values, 
         _, oracle_val = compute_oracle_table_k2(L1, U1, a, b, L2, U2, T)
         if algo_name == "UCB1":
             totals = run_ucb1_monte_carlo(n_mc, T, L1, U1, a, b, L2, U2, sigma, base_seed)
-        elif algo_name == "CUCB":
-            totals = run_commit_ucb_monte_carlo(n_mc, T, L1, U1, a, b, L2, U2, sigma, base_seed)
-        elif algo_name == "HUCB":
-            totals = run_hybrid_monte_carlo(n_mc, T, L1, U1, a, b, L2, U2, sigma, base_seed)
         elif algo_name == "RAWUCB":
             totals = run_rawucb_monte_carlo(n_mc, T, L1, U1, a, b, L2, U2, sigma, base_seed)
-        elif algo_name == "ERAWUCB":
-            totals = run_eff_rawucb_monte_carlo(n_mc, T, L1, U1, a, b, L2, U2, sigma, base_seed)
+        elif algo_name == "GLRUCB":
+            totals = run_glr_ucb_monte_carlo(n_mc, T, L1, U1, a, b, L2, U2, sigma, base_seed)
+        elif algo_name == "SWUCB":
+            totals = run_saturation_aware_monte_carlo(n_mc, T, L1, U1, a, b, L2, U2, sigma, base_seed)
         else:
             totals = run_balanced_explore_monte_carlo(n_mc, T, L1, U1, a, b, L2, U2, sigma, base_seed)
         regret = oracle_val - totals.mean()
@@ -201,4 +200,4 @@ def run_all_cases(algo_name, a_grid, b_grid, sigma=0.15, n_mc=100,
 if __name__ == "__main__":
     a_grid = np.linspace(0.1, 1.0, 5)
     b_grid = np.linspace(0.1, 1.0, 5)
-    run_all_cases("ERAWUCB", a_grid, b_grid)
+    run_all_cases("SWUCB", a_grid, b_grid)
