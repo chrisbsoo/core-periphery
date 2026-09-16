@@ -1,101 +1,250 @@
-# Core-Periphery Bandits
+# Contesting Time-Attention Bandits (CTAB)
 
-A two-armed bandit model of vacancy allocation in online labour markets: an exogenously unavailable, stable arm (**core**, experienced workers) against an always-available arm whose value rises with use (**periphery**, novice workers). Built to study when exploration algorithms correctly discover that a currently-worse option is actually the better long-run choice, and to design one that does this reliably.
-
-See results + notebook here: https://github.com/chrisbsoo/core-periphery/blob/main/src/core_periphery/sig_analysis.ipynb
-
-## Motivation
-
-Online labour platforms must repeatedly decide whether a new vacancy goes to a small, experienced worker pool or a large, novice one. The core is stable but frequently unavailable; the periphery is always available, but its true productivity is only revealed, and only improves, as workers are actually given the chance to work. Pallais (2014, *AER*) documents exactly this failure empirically in a field experiment on oDesk/Upwork: novice workers were systematically under-hired relative to their true, initially-unrevealed ability. This project formalizes the algorithmic version of that problem.
+A two-armed bandit model where each arm's value both **rises under
+sustained attention** and **independently decays with elapsed
+time**, combining rested-rising and restless-rotting dynamics on the
+same arm. Motivated by resource-allocation problems where neglect is
+never free: labor platforms, energy infrastructure, cybersecurity
+patch budgets, and startup product-direction decisions.
 
 ## Model
 
-Five parameters: `μ1*, μ2*, v, p, σ`.
+At each round `t`, the learner selects arm `i` and observes a noisy
+reward with mean
 
-- **Core**: fixed mean `μ1*`, available each round independently with probability `1-p`.
-- **Periphery**: always available, mean `μ2(n) = μ2*(1 - e^(-vn))`, `n` = its own pull count, a standard saturating rising-bandit curve. `μ2*` and `v` are unknown to any algorithm.
-- **Noise**: shared `σ` across both arms.
+```
+mu_i(t, n_i) = L_i + (U_i - L_i) * S(n_i^alpha - t^beta)
+```
 
-## Key findings
+where `S` is the logistic sigmoid, `n_i` is arm `i`'s own pull
+count, `t` is the shared global round, and `L_i < U_i` are arm `i`'s
+floor and ceiling. Domain: `alpha, beta in (0, 1]`, `K = 2` arms.
 
-**A "natural" regret definition is provably gameable.** Comparing a policy against a benchmark built from its own pull-count trajectory lets a policy that never touches the periphery score exactly zero regret, regardless of how good the periphery secretly is. Fixed by comparing against an independently-computed optimal policy (`π*`) instead, coupled to the same exogenous core-availability draws, but with its own separate pull-count trajectory.
+**Named regions** (the `alpha, beta` axis):
 
-**The "obvious" optimal policy is itself wrong.** Exact backward induction shows the true optimal policy sometimes deliberately plays the currently-worse arm, sacrificing near-term reward because it raises the periphery's pull count, paying off over the remaining horizon. Formalized as **Proposition 1**: the optimal policy deviates from myopic behavior if and only if `μ2* > μ1*` and enough horizon remains to recoup the investment.
-
-**The oracle is verified correct, not assumed**: exact agreement (machine precision) against an independent brute-force implementation, both at single points and across every one of 1,890 reachable states in a full-table check; dominates 51 randomized policies and both fixed extremes in a sweep; forward-simulated realized rewards converge to the DP-predicted value under Monte Carlo.
-
-**No single baseline dominates.** A 256-cell `(v, p)` sweep, 100 seeds, paired-significance-tested, produces a "winner map", different baselines own distinct, mechanistically-explainable regions, driven by two separate mechanisms: **investment timing** (does the periphery reveal itself fast enough, relative to `p` and remaining horizon, to be worth chasing) and **estimation robustness** (a completely separate failure mode where naive Greedy exhibits a rare but catastrophic regret tail from committing off a single noisy sample of a rarely-available arm, up to 300x its typical outcome in ~0.1% of runs).
-
-**Explore-then-Commit's exploration budget is theory-grounded**: sized as `m = c · T^(2/3)`, the minimax-optimal exploration length for a stationary two-armed bandit with unknown gap (Lattimore & Szepesvári), with `c` calibrated empirically since the theorem doesn't account for this environment's rising mean or asymmetric misclassification cost.
-
-## Proposed algorithm: RecencyUCB
-
-Motivated directly by the two mechanisms above. Structurally still a UCB-style optimistic-index policy, but with two different memory strategies per arm: **full-history** mean for the core (stationary, no reason to discard old data) and a **sliding-window** mean for the periphery (non-stationary/rising, old low-value pulls actively mislead a full-history average). A minimum-sample floor (`min_floor=20`) before ever committing directly targets the estimation-robustness failure mode; the windowed mean directly targets the investment-timing failure mode. Exploration bonus uses the *true* pull count (not the windowed count) for both arms, so exploration genuinely tapers off as real evidence accumulates.
-
-## Results
-
-100-seed, 256-cell `(v,p)` sweep, both fixed instances (`μ2* > μ1*` and `μ2* < μ1*`), paired t-test per cell:
-
-| | Case 1 (periphery genuinely better) | Case 2 (periphery genuinely worse) |
+| Region | Condition | Key property |
 |---|---|---|
-| **Cells won** | 89/256 (34.8%) — most of any policy | 0/256 |
-| **Significant wins** | 89/89 (100%) | — |
-| **Grid-wide mean regret** | 99.6 — best of any policy, ~30% below next-best (139.3) | 1.53 — mid-pack; ~10x above best (0.14), but far below worst naive baseline (50.9) |
+| Attention-Dominant | `alpha > beta` | any deficit fully recovers |
+| Time-Dominant | `alpha < beta` | out of scope; No-Switching provably fails here |
+| Contested | `alpha = beta in (0,1)` | deficit shrinks but never fully closes |
+| Critical Contested | `alpha = beta = 1` | deficit frozen exactly, forever |
 
-RecencyUCB wins decisively and confidently in the regime it targets (investment timing under a genuinely-improving arm), at a modest, mechanistically-explained cost in the regime governed by a different mechanism (estimation robustness under a confirmed-inferior, stationary arm), its fixed window leaves a persistent variance floor that full-history estimators don't have once nothing is actually changing.
+**Floor-Ceiling cases** (the `L, U` axis, independent of `alpha, beta`):
 
-## Repo structure
+| Case | Condition | Meaning |
+|---|---|---|
+| Dominance | `(L_i-L_j)(U_i-U_j) >= 0` | one arm pointwise beats the other |
+| Crossover | `(L_i-L_j)(U_i-U_j) < 0` | genuine trade-off, no free lunch |
 
-core_periphery_bandit.py # simulation engine: oracle DP, all policies (incl. RecencyUCB), parallel Monte Carlo (numba)
-oracle_cache.py # disk cache for oracle tables, concurrency-safe (verified under real multiprocessing)
-cloud_sweep.py # distributed (v,p,seed) sweep via Modal.com
-sig_analysis.py # significance testing, metrics table, winner-map plotting
+A continuous version of this split, `rho = 2xy/(x^2+y^2)` where
+`x = L_i-L_j`, `y = U_i-U_j`, gives `rho in [-1, 1]`: `rho = -1` is
+symmetric Crossover, `rho = +1` is symmetric Dominance, `rho = 0` is
+the boundary.
 
+## Key Results
 
-## Running it
+**Proven, for `alpha >= beta`** (Attention-Dominant + Contested):
 
-**Locally:**
-```python
-from core_periphery_bandit import compute_oracle_table, monte_carlo, configure_threads, POLICY_RECENCY_UCB
+- **No-Switching Theorem**: the optimal policy is always constant
+  commitment to a single arm -- never switch. This justifies
+  `max(F_1, F_2)` as an exact, `O(T)` regret benchmark in place of
+  the general `O(T^2)` DP oracle.
+- **Tight regret characterization**:
+  - Critical Contested (`a=b=1`): `Theta(T)`
+  - Contested (`a=b=c<1`): `Theta(T^c)`
+- **Partial regret characterization**:
+  - Attention-Dominant (`a>b`): lower bound `Omega(log T)` proven;
+    matching upper bound is **open**. Empirical evidence suggests
+    standard algorithms (UCB1, BTC) do *not* achieve `O(log T)`
+    here -- both show polynomial-looking exponents around `0.6-0.7`.
 
-configure_threads(8)
-table = compute_oracle_table(mu1_star=0.6, mu2_star=0.75, v=0.01, p=0.85, T=5000)
-mean_r, std_r, frac2, final_r, sample_r = monte_carlo(
-    POLICY_RECENCY_UCB, n_mc=2000, T=5000, mu1_star=0.6, mu2_star=0.75, v=0.01, p=0.85,
-    sigma=0.2, base_seed=2026, oracle_action_table=table, window=100, min_floor=20,
-)
+**Out of scope**: Time-Dominant (`alpha < beta`) -- No-Switching
+provably fails here (explicit counterexample), and no regret
+characterization is attempted.
+
+**Open conjecture**: Dominance implies optimal constant commitment
+for *any* `alpha, beta > 0`, not just `alpha >= beta`. Strongly
+evidenced numerically (extensive search, no counterexample found),
+not proven.
+
+## Algorithms
+
+**Greedy family** (`greedy.py`): Pure Greedy, ETC (block
+exploration), BTC (balanced/alternating exploration). ETC and BTC
+are both proven `O(T^min(1, 2/3+c))` in the Contested Region,
+conditional on a stated exploration-gap assumption.
+
+**UCB family** (`ucb.py`): UCB1 (proven `Omega(T)` at Critical
+Contested), RAW-UCB, R-ed-UCB -- both literature baselines shown to
+**saturation collapse** into UCB1-like behavior once an arm's value
+saturates near `L` or `U`, since old and new observations become
+statistically indistinguishable at that point.
+
+**Proposed algorithms**: SSW-UCB (saturation-aware sliding window,
+strong on Dominance), GLR-UCB (linear-model confidence sequence on
+`F_1 - F_2`, strong away from the Crossover boundary, with a sharp
+weakness confined to `rho` near `0`).
+
+## Empirical Findings Worth Knowing
+
+- **SW-UCB (fixed window) beats RAW-UCB (adaptive multi-window)**
+  despite being the simpler algorithm -- adaptive window selection is
+  precisely what gets fooled by saturation; a fixed window has
+  nothing to get fooled by.
+- **GLR-UCB achieves near-optimal exponents (`~0.03`) almost
+  everywhere in the Attention-Dominant region**, except a sharp
+  spike (`~0.87`) confined to `rho in [-0.27, 0.27]`, peaking at
+  `rho ~ +-0.05` -- exactly the Dominance/Crossover boundary, where
+  its confidence signal is weakest. Whether this reflects a genuine
+  asymptotic rate or a finite-`T` transient is not yet established.
+
+## Project Structure
+
+```
+src/core_periphery/
+    environment.py             model (func_target), K=2 DP oracle,
+                                closed-form alpha>=beta benchmark
+                                (regret_benchmark), rho()
+    greedy.py                  Pure Greedy, ETC, BTC + Monte Carlo runners
+    ucb.py                     UCB1, RAW-UCB, SW-UCB, SSW-UCB, GLR-UCB
+                                + Monte Carlo runners
+    rho_grid.py                 sweeps (alpha,beta) x rho, fits regret
+                                exponents via log-log regression across
+                                multiple T, saves .png/.npy/.csv
+    modal_app.py                runs rho_grid.py's sweep on Modal, one
+                                container per algorithm in parallel
+    summary_grid.py             collapses each cell's rho-strip into one
+                                number (mean/max/etc), standard heatmap
+                                -- batch-processes a folder of .npy files
+    pooled_gradient.py           spatially pools the (alpha,beta) grid to
+                                fewer, bigger cells while KEEPING the
+                                full rho-gradient visible in each pooled
+                                cell (unlike summary_grid.py, which
+                                collapses rho away)
+    regret_benchmark_verify.py   verifies the closed-form alpha>=beta
+                                benchmark against the O(T^2) DP oracle
+    archive/                    earlier/superseded implementations
+    modal_outputs/
+        csv/                    raw (alpha,beta,rho,exponent) data per algorithm
+        npy/                    raw exponent arrays, one per algorithm
+        png/                    rho-gradient grid plots
+        pooled/                  pooled_gradient.py outputs
+        summary/                 summary_grid.py outputs
+docs/
+bandits-env/
 ```
 
-**Distributed sweep** (needs a [Modal](https://modal.com) account):
+## Usage
 
-pip install modal
-modal setup
-modal run --detach modal_sweep.py --n-seeds 100 --output results.npz
+```bash
+# run the rho-gradient sweep for all algorithms in parallel on Modal
+modal run src/core_periphery/modal_app.py --grid-size 16 --n-rho 30 --n-mc 100
 
+# collapse each algorithm's rho-strip into a single summary heatmap
+python3 src/core_periphery/summary_grid.py modal_outputs/npy modal_outputs/summary --agg all
 
-**Analysis:**
-```python
-from sweep_analysis import analyze_sweep
-analyze_sweep("results.npz", title="Case 1", save_path="winner_map.png")
+# pool the (alpha,beta) grid down while keeping rho-gradients visible
+python3 src/core_periphery/pooled_gradient.py modal_outputs/npy modal_outputs/pooled --pool 4
 ```
 
-## Engineering notes
+## Helpful Prompt for AI
 
-- Simulation core is `numba`-JIT-compiled; only the Monte Carlo loop is parallelized (`prange`), the oracle's backward induction is inherently sequential, `O(T²)`, and cached to disk (and to a persistent Modal Volume) since it depends only on `(μ1*, μ2*, v, p, T)`, never the random seed.
-- Cache correctness verified under genuine concurrent access, multiprocessing, and up to 100 parallel Modal containers writing to a shared volume, via exact array-equality checks against ground truth.
-- Full sweeps (25,600+ tasks: 100 seeds × 256 cells × 7 policies) run on Modal.com in minutes for a few dollars of CPU-only compute; checkpointed periodically to disk so a network interruption or crash doesn't lose near-complete progress.
+Paste the block below at the start of a new AI conversation to get
+instant, accurate context on this project -- no need to re-explain
+the model, results, or codebase from scratch.
 
-## Known limitations
+```
+I'm working on "Time-Attention Competing Bandits" (TACB), a research
+project on a two-armed bandit model where each arm's value both
+rises under sustained attention and independently decays with
+elapsed time. Here's the context:
 
-- Significance testing (paired t-test per cell) has no multiple-comparisons correction across the 256 tested cells, and its normality assumption is untested in regions with confirmed skewed regret distributions (the tail-risk finding above).
-- `K=2` only; the natural `K=10` extension (matching Upwork's own public "Top Rated = top 10%" designation) is scoped out, exact backward induction becomes intractable with multiple rested/rising arms.
-- RecencyUCB's fixed window is a design trade-off, not a free lunch, a growing/adaptive window is a natural next step to close the Case 2 gap without sacrificing Case 1 performance.
+MODEL
+mu_i(t, n_i) = L_i + (U_i - L_i) * S(n_i^alpha - t^beta)
+where S is the logistic sigmoid, n_i is arm i's own pull count,
+t is the shared global round, and L_i < U_i are arm i's floor and
+ceiling. Domain: alpha, beta in (0, 1]. K=2 arms.
 
-## References
+NAMED REGIONS (alpha, beta axis)
+- Attention-Dominant (alpha > beta): any deficit fully recovers
+- Time-Dominant (alpha < beta): outside scope, not analyzed
+- Contested (alpha = beta in (0,1)): deficit shrinks but never closes
+- Critical Contested (alpha = beta = 1): deficit frozen exactly, forever
 
-- Pallais, A. (2014). Inefficient Hiring in Entry-Level Labor Markets. *American Economic Review*.
-- Kleinberg, R., Niculescu-Mizil, A., & Sharma, Y. (2010). Regret Bounds for Sleeping Experts and Bandits.
-- Metelli, A. M., Trovò, F., Pirola, M., & Restelli, M. (2022). Stochastic Rising Bandits. *ICML*.
-- Basu, S., Sen, R., Sanghavi, S., & Shakkottai, S. (2019). Blocking Bandits. *NeurIPS*.
-- Doeringer, P. B., & Piore, M. J. (1971). Internal Labor Markets and Manpower Analysis.
-- Lattimore, T., & Szepesvári, C. (2020). Bandit Algorithms. Cambridge University Press.
+FLOOR-CEILING CASES (L, U axis, independent of alpha/beta)
+- Dominance: (L_i-L_j)(U_i-U_j) >= 0 -- one arm pointwise beats the other
+- Crossover: (L_i-L_j)(U_i-U_j) < 0 -- genuine trade-off, no free lunch
+- rho = 2xy/(x^2+y^2) in [-1,1] is a continuous version of this split,
+  x = L_i-L_j, y = U_i-U_j. rho=-1 symmetric Crossover, rho=+1
+  symmetric Dominance, rho=0 is the boundary.
+
+PROVEN RESULTS (all for alpha >= beta, i.e. Attention-Dominant + Contested)
+- No-Switching Theorem: optimal policy is always constant commitment
+  to one arm (never switch), justifying regret benchmark max(F1,F2)
+- Regret is TIGHT (Theta, both bounds proven):
+  - Critical Contested (a=b=1): Theta(T)
+  - Contested (a=b=c<1): Theta(T^c)
+- Regret is PARTIAL (one bound only):
+  - Attention-Dominant (a>b): lower bound Omega(log T) proven;
+    matching upper bound OPEN -- empirical evidence suggests it may
+    NOT be log T for standard algorithms (UCB1, BTC both show
+    polynomial-looking exponents ~0.6-0.7 there)
+- Time-Dominant (a<b): out of scope entirely, No-Switching provably
+  fails here (explicit counterexample exists)
+- Conjecture (unproven, strongly evidenced numerically): Dominance
+  implies optimal commitment for ANY alpha,beta>0, not just a>=b
+
+ALGORITHMS (codebase: environment.py, greedy.py, ucb.py)
+Greedy family: Pure Greedy, ETC (block exploration), BTC (balanced/
+  alternating exploration) -- ETC and BTC both proven O(T^min(1,2/3+c))
+  in the Contested Region, conditional on a stated exploration-gap
+  assumption
+UCB family: UCB1 (proven Omega(T) at Critical Contested), RAW-UCB,
+  R-ed-UCB (both literature baselines -- shown to "saturation
+  collapse" into UCB1-like behavior once an arm's value saturates
+  near L or U, since old/new observations become indistinguishable)
+Proposed: SSW-UCB (saturation-aware sliding window, strong on
+  Dominance), GLR-UCB (linear-model confidence sequence on F1-F2,
+  strong away from the Crossover boundary, weak exactly at rho~0)
+
+KEY EMPIRICAL FINDINGS
+- SW-UCB (fixed window) beats RAW-UCB (adaptive multi-window) despite
+  being simpler -- adaptivity is what gets fooled by saturation, not
+  insufficient sophistication
+- GLR-UCB achieves near-optimal exponents (~0.03) almost everywhere
+  in Attention-Dominant, EXCEPT a sharp spike (~0.87) confined to
+  rho in [-0.27, 0.27], peaking at rho~+-0.05 -- exactly the
+  Dominance/Crossover boundary where its confidence signal is weakest
+
+CODEBASE STRUCTURE (all in src/core_periphery/)
+- environment.py: model (func_target), K=2 DP oracle, closed-form
+  alpha>=beta benchmark (regret_benchmark), rho()
+- greedy.py: Pure Greedy, ETC, BTC + Monte Carlo runners
+- ucb.py: UCB1, RAW-UCB, SW-UCB, SSW-UCB, GLR-UCB + Monte Carlo runners
+- rho_grid.py: sweeps (alpha,beta) x rho, fits regret exponents via
+  log-log regression across multiple T, saves .png/.npy/.csv
+- modal_app.py: runs rho_grid.py's sweep on Modal, one container per
+  algorithm in parallel
+- summary_grid.py: collapses each cell's rho-strip into one number
+  (mean/max/etc), standard heatmap -- takes a folder of .npy files
+- pooled_gradient.py: spatially pools the (alpha,beta) grid to fewer,
+  bigger cells while KEEPING the full rho-gradient visible in each
+  pooled cell (unlike summary_grid.py, which collapses rho away)
+- regret_benchmark_verify.py: verifies the closed-form alpha>=beta
+  benchmark against the O(T^2) DP oracle
+- modal_outputs/{csv,npy,png,pooled,summary}/: outputs by type
+
+WHEN HELPING WITH THIS PROJECT
+- Always verify numerically before asserting a theoretical claim --
+  this project has caught several wrong derivations this way already
+- Distinguish clearly between PROVEN (cite the theorem/proposition)
+  and EMPIRICAL (cite the specific test) -- don't blur the two
+- The paper structure is: Model -> Regret (basic results) -> Theory
+  of the Model (lower bounds, Floor-Ceiling cases, rho) -> Applications
+  -> Related Work -> Greedy Analysis -> UCB Analysis -> Proposed
+  Algorithms -> Empirical Results
+```
+
+## License
+
+See `LICENSE`.
